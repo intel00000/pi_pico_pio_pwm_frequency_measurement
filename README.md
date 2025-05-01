@@ -1,6 +1,6 @@
 # Pi Pico PIO Frequency Measurement Program
 
-This project is a MicroPython program designed to measure the frequency of a PWM signal using the Raspberry Pi Pico's PIO (Programmable Input/Output) and interrupts. The program is capable of counting the number of input pulses within a specified gate time, thereby calculating the frequency of the input signal with high accuracy.
+A MicroPython program designed to measure the frequency of a PWM signal using the Raspberry Pi Pico's PIO (Programmable Input/Output) and interrupts. The program is capable of counting the number of input pulses within a specified gate time, thereby calculating the frequency of the input signal with high accuracy.
 
 ## Table of Contents
 
