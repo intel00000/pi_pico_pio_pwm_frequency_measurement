@@ -277,6 +277,8 @@ def main():
 
             if timing_pulse_count == 0:
                 pulse_count = pulse_counter.read_pulse_count()
+                while pulse_count == -1:
+                    pulse_count = pulse_counter.read_pulse_count()
                 frequency = pulse_count / timing_interval_ms * 1000
                 if pulse_count > 1_000_000:  # MHz
                     gen_freq_str = f"{pwm_test_signal.freq() / 1_000_000} MHz"

@@ -76,7 +76,7 @@ def pulse_counter_pio(sideset_pin=SIDESET_PIN_ABSOLUTE):
 
 # A second pio program to set a side-set pin, initialize the side-set pin to high
 @asm_pio(sideset_init=PIO.OUT_HIGH)
-def timing_pulse_pio(irq_id=PWM_SM_ID):
+def timing_pulse_pio(irq_id=PWM_SM_ID, pulse_pin=INPUT_PULSE_PIN_ABSOLUTE):
     # here we refer to the PWM example in RP2040 datasheet and do a noblock pull. if nothing on the TX FIFO, this will copy X to OSR, if there is something on the TX FIFO, this will copy the value from the TX FIFO to OSR and then pull it to the RX FIFO.
     # this allow us to change the timing ratio on the fly
     pull(noblock)
@@ -84,8 +84,9 @@ def timing_pulse_pio(irq_id=PWM_SM_ID):
     mov(osr, x)
 
     # synchronize to reference pulse
-    wait(1, pin, 0)
-    wait(0, pin, 0)
+    irq(clear, irq_id)  # set the IRQ to wait for the PWM signal to start
+    wait(1, gpio, pulse_pin)
+    wait(0, gpio, pulse_pin)
     nop().side(0)  # set side-set pin
 
     label("loop")
@@ -106,11 +107,10 @@ def timing_pulse_pio(irq_id=PWM_SM_ID):
 @asm_pio(sideset_init=PIO.OUT_LOW)
 def pwm_pio(irq_id=PWM_SM_ID):
     # wait for a interrupt to start the PWM signal
+    irq(irq_id)  # block if the irq is set
     pull(noblock).side(0)  # Set the side-set pin to low
     mov(x, osr)  # Move the value from the OSR to the x register
     mov(y, isr)  # Move the value from the ISR to the y register
-
-    # irq(block, rel(sm_id))  # Wait for an interrupt to start the PWM signal
 
     label("countloop")
     jmp(x_not_y, "noset")
@@ -124,7 +124,7 @@ def pwm_pio(irq_id=PWM_SM_ID):
 
 
 def compute_best_pwm_parameters(
-    system_freq, target_pwm_freq, duty_percent, verbose=False, instr_per_loop=3
+    system_freq, target_pwm_freq, duty_percent, verbose=DEBUG, instr_per_loop=3
 ):
     if not (0.0 <= duty_percent <= 100.0):
         raise ValueError("Duty cycle must be between 0 and 100%")
@@ -133,7 +133,9 @@ def compute_best_pwm_parameters(
 
     # Compute the max wrap allowed to keep sm_freq ≤ system_freq
     max_possible_wrap = int(system_freq // (target_pwm_freq * instr_per_loop)) - 1
-    max_possible_wrap = min(max_possible_wrap, 65535)  # Clamp to 16-bit
+    max_possible_wrap = min(max_possible_wrap, 4294967295)  # Clamp to 32-bit
+    if verbose:
+        print(f"[PWM PIO] Max possible wrap: {max_possible_wrap}")
 
     best_wrap = 0
     max_div = 255 + 15 / 16.0
@@ -391,6 +393,8 @@ def main():
 
             if timing_pulse_count == 0:
                 pulse_count = pulse_counter.read_pulse_count()
+                while pulse_count == -1:
+                    pulse_count = pulse_counter.read_pulse_count()
                 frequency = pulse_count / timing_interval_ms * 1000
                 if pulse_count > 1_000_000:  # MHz
                     gen_freq_str = f"{pwm_test_signal.freq() / 1_000_000} MHz"

@@ -1,6 +1,13 @@
-from machine import Pin, Timer, PWM, freq, mem32
+from machine import Pin, Timer, PWM, freq
 from rp2 import asm_pio, StateMachine
-import time
+import utime
+
+
+PWM_TESTING_PIN_ABSOLUTE = 0  # Testing PWM signal, connect this to the INPUT_PULSE_PIN
+PWM_TESTING_FREQUENCY = 10  # Frequency of the testing PWM signal
+
+CPU_TARGET_FREQUENCY = 125_000_000  # Target CPU frequency in Hz
+CPU_DEFAULT_FREQUENCY = 125_000_000  # 125 MHz
 
 PWM_OUTPUT_PIN = 0
 PULSE_INPUT_PIN = 2
@@ -48,34 +55,52 @@ class PulseCounter:
 pulse_counter_pio = PulseCounter(0, PULSE_INPUT_PIN, pulse_counter_pio)
 pulse_frequency_pio = 0
 
-time_us = time.ticks_us()
+time_us = utime.ticks_us()
 
 
 # Timer callback to read and reset the counter
 def timer_callback_timer(timer):
     global pulse_counter_pio, pulse_frequency_pio, time_us
-    # adjust the frequency based on the elapsed time
-    pulse_frequency_pio = pulse_counter_pio.read() / (time.ticks_us() - time_us) * 1e6
+    # adjust the frequency based on the elapsed utime
+    pulse_frequency_pio = pulse_counter_pio.read() / (utime.ticks_us() - time_us) * 1e6
     pulse_counter_pio.reset()
-    # record the time of the last read
-    time_us = time.ticks_us()
+    time_us = utime.ticks_us()
 
 
 def main():
     try:
+        freq(CPU_TARGET_FREQUENCY)  # Set the CPU frequency
+        print(f"CPU freq set to: {freq() / 1_000_000} MHz")
+
         # Generate testing PWM signal
-        pwm_testing = PWM(Pin(PWM_OUTPUT_PIN, Pin.OUT))
-        pwm_testing.freq(20)  # Set the desired frequency in Hz
-        pwm_testing.duty_u16(32768)  # Set duty cycle to 50%
+        pwm_testing = PWM(Pin(PWM_TESTING_PIN_ABSOLUTE, Pin.OUT))
+        pwm_testing.init(freq=PWM_TESTING_FREQUENCY, duty_u16=32768)
 
         # Set up the timer to periodically read the counter
         timer = Timer(period=1000, mode=Timer.PERIODIC, callback=timer_callback_timer)
 
+        previous_time = utime.ticks_us()
         while True:
-            time.sleep(1)
-            print(
-                f"Generated PWM Frequency: {pwm_testing.freq()} Hz, Measured frequency: {pulse_frequency_pio} Hz"
-            )
+            # do some math here to simulate work
+            for i in range(1000):
+                i = i + i
+            current_time = utime.ticks_us()
+            tick_diff = utime.ticks_diff(current_time, previous_time)
+            if tick_diff >= 1e6:  # 1 second
+                if pulse_frequency_pio > 1_000_000:  # MHz
+                    freq_str = f"{pulse_frequency_pio / 1_000_000} MHz"
+                    gen_freq_str = f"{pwm_testing.freq() / 1_000_000} MHz"
+                elif pulse_frequency_pio > 1_000:
+                    freq_str = f"{pulse_frequency_pio / 1_000} kHz"
+                    gen_freq_str = f"{pwm_testing.freq() / 1_000} kHz"
+                else:
+                    freq_str = f"{pulse_frequency_pio} Hz"
+                    gen_freq_str = f"{pwm_testing.freq()} Hz"
+                print(
+                    f"Tick elapsed: {tick_diff} us, Generated PWM Frequency: {gen_freq_str}, Measured Frequency: {freq_str}"
+                )
+                previous_time = current_time
+
     except KeyboardInterrupt:
         global pulse_counter_pio
         timer.deinit()
