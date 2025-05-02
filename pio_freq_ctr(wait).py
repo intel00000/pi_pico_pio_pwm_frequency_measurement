@@ -24,46 +24,22 @@ PULSE_COUNTER_SM_ID = 1
 
 
 # PIO program to count pulses, the gate time is controlled a side-set pin set by another PIO program
-# !# we now compared the previous pin state with the current pin state, this allow us to no longer rely on wait, which could stall the program if the final state of the input pulse are fixed at high (then the pio program will forever wait for low), this also allow the pio program to constantly output the pulse count to the FIFO.
 @asm_pio(autopull=False, out_shiftdir=PIO.SHIFT_RIGHT)
 def pulse_counter_pio(sideset_pin=SIDESET_PIN_ABSOLUTE):
-    # Reset registers to 0
+    # Reset scratch registers
     set(x, 0)
-    set(y, 0)
     # wait for the side-set pin to go low
     wait(1, gpio, sideset_pin)
     wait(0, gpio, sideset_pin)
 
     # start counting the pulses
     label("count")
-    mov(isr, x)  # temporarily save the current value of x to the ISR
-    mov(x, y)  # move the previous pin value from y to x
-    # set(y, 0)  # doesn't seem to matter
+    wait(0, pin, 0)  # wait for rising edge on input pin
+    wait(1, pin, 0)
+    jmp(x_dec, "check_sideset")  # Decrement counter and jump to check_pin
 
-    # "mov dest, pins" shift all 32 pins states, so we need to do some bit shifting to get the one pin value we want, luckily the pin we want are the in_base pins which is the last bit of all 32 bits.
-    # Noted the last bit of "mov dest, pins" start with the in_base pin, then increment and wrap around to the pin before the in_base pin, so if one change the in_base, the return also change.
-    mov(osr, pins)  # move all pin states to the OSR
-
-    # shift the last bit of the OSR to the y register, this is the one pin state we want to check
-    #! MUST set out_shiftdir=PIO.SHIFT_RIGHT in the @asm_pio decorator to shift the OSR to the right, default is PIO.SHIFT_LEFT
-    out(y, 1)
-
-    jmp(x_not_y, "check_falling_edge")  # If the pin value changed, check_falling_edge
-
-    label("restore_x")  # Restore the previous value of x, continue counting
-    mov(x, isr)
-    jmp("count")
-
-    label("check_falling_edge")
-    jmp(not_y, "increment")  # If the current pin state is low, jump to increment
-    jmp(
-        "restore_x"
-    )  # If the current pin state is high, restore x and continue counting
-
-    label("increment")
-    mov(x, isr)  # Restore x
-    jmp(x_dec, "check_side_set")  # Decrement x and check the side-set pin
-    label("check_side_set")  # Check the side-set pin
+    # Check the side-set pin
+    label("check_sideset")
     jmp(pin, "push")  # If side-set is high, jump to push
     jmp("count")  # If side-set is still low, continue count
 

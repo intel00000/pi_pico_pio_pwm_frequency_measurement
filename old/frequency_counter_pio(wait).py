@@ -27,11 +27,7 @@ PULSE_COUNTER_SM_ID = 7
 
 # PIO program to count pulses, the gate time is controlled a side-set pin set by another PIO program
 @asm_pio()
-def pulse_counter_pio(
-    pulse_pin=INPUT_PULSE_PIN_ABSOLUTE,
-    timing_pin=TIMING_PULSE_PIN_ABSOLUTE,
-    sideset_pin=SIDESET_PIN_ABSOLUTE,
-):
+def pulse_counter_pio(sideset_pin=SIDESET_PIN_ABSOLUTE):
     label("start")
     set(x, 0)  # Set the x register to 0, this is the counter register for the pulses
 
@@ -42,7 +38,6 @@ def pulse_counter_pio(
     label("count")
     wait(0, pin, 0)  # Wait for low pulse on input pin
     wait(1, pin, 0)  # Wait for high pulse on input pin
-    wait(0, pin, 0)  # Wait for low pulse on input pin
     jmp(x_dec, "check_sideset")  # Decrement counter and jump to check_pin
     label("check_sideset")
     jmp(pin, "push")  # If side-set is high, jump to push
@@ -57,11 +52,7 @@ def pulse_counter_pio(
 # A second pio program to set a side-set pin, initialize the side-set pin to high
 @asm_pio(sideset_init=PIO.OUT_HIGH)
 def timing_pulse_pio(
-    sm_id=TIMING_PULSE_SM_ID,
-    pulse_pin=INPUT_PULSE_PIN_ABSOLUTE,
-    timing_pin=TIMING_PULSE_PIN_ABSOLUTE,
-    sideset_pin=SIDESET_PIN_ABSOLUTE,
-    timing_ratio=TIMING_PULSE_RATIO,
+    pulse_pin=INPUT_PULSE_PIN_ABSOLUTE, timing_ratio=TIMING_PULSE_RATIO
 ):
     label("start")
     set(x, timing_ratio)  # Set the x register to timing_ratio

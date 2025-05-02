@@ -7,7 +7,9 @@ A MicroPython program designed to measure the frequency of a PWM signal using th
 ## Recent Changes
 
 - <font color="yellow">**(CHANGE)** Rewrite class to improve the code readability and maintainability, and to allow the pulse counter to be used in other projects.</font>
-- <font color="yellow">**(CHANGE)** pulse_counter_pio now directly compare the previous pin state with the current pin state. This allow us to no longer rely on wait, which could stall the pio if the final state of the input pulse are fixed at high (then the pio will forever wait for low). This also allow the pio program to constantly report its pulse count to the FIFO. The downside is the need for a third register to store the previous pin state and this result in a much complex pio program.</font>
+- <font color="yellow">**(CHANGE)** pulse_counter_pio now directly compare the previous pin state with the current pin state. This allow us to no longer rely on wait, which could stall the pio if the final state of the input pulse are fixed at high (then the pio will forever wait for low). This also allow the pio program to constantly report its pulse count to the FIFO. The downside is the need for a third register to store the previous pin state and this result in a much more complex pio program.</font>
+- <font color="yellow">**(NOTE)** I just realized the new version have a much lower max frequency range than the old version since the check status code block take double the instruction cycle than the old version. Lesson here is to not push for a third register.</font>
+- <font color="yellow">**(NOTE)** With an oscilloscope, I verified that the new version `pio_freq_ctr.py` can measure frequencies up to 5 MHz at 125 MHz CPU frequency, while the old version `pio_freq_ctr(wait).py` can measure frequencies up to 10 MHz at 125 MHz CPU frequency. This is due to the additional instruction cycles required for checking the pin state in the new version, so pick the one that suit your needs.</font>
 
 ## Table of Contents
 
