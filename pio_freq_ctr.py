@@ -4,7 +4,7 @@ from rp2 import asm_pio, StateMachine, PIO
 DEBUG = False  # Set to True to enable debug messages
 
 PWM_TESTING_PIN_ABSOLUTE = 0  # Testing PWM signal, connect this to the INPUT_PULSE_PIN
-PWM_TESTING_PIN_ABSOLUTE_FREQUENCY = 10_000_000  # Frequency of the testing PWM signal
+PWM_TESTING_PIN_ABSOLUTE_FREQUENCY = 5_000_000  # Frequency of the testing PWM signal
 
 INPUT_PULSE_PIN_ABSOLUTE = 2  # Pin to measure the frequency of the PWM signal
 TIMING_PULSE_PIN_ABSOLUTE = 6  # Pin to generate the timing pulses
