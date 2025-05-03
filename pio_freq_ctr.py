@@ -169,6 +169,7 @@ class PulseCounter:
         self.timing_pulse_pio_sm.exec("mov(y, osr)")
         self.timing_pulse_pio_sm.exec("mov(x, y)")
         self.timing_pulse_pio_sm.restart()
+        self.timing_pulse_pio_sm.active(1)
 
     def read_pulse_count(self):
         """
