@@ -21,8 +21,8 @@ TIMING_PULSE_FREQUENCY = int(8 * CPU_TARGET_FREQUENCY / CPU_DEFAULT_FREQUENCY)
 TIMING_PULSE_RATIO = int(8 * CPU_TARGET_FREQUENCY / CPU_DEFAULT_FREQUENCY)
 
 PWM_SM_ID = 0
-TIMING_PULSE_SM_ID = 4
-PULSE_COUNTER_SM_ID = 5
+TIMING_PULSE_SM_ID = 1
+PULSE_COUNTER_SM_ID = 4
 
 
 # PIO program to count pulses, the gate time is controlled a side-set pin set by another PIO program
@@ -31,7 +31,7 @@ PULSE_COUNTER_SM_ID = 5
 def pulse_counter_pio(sideset_pin=SIDESET_PIN_ABSOLUTE):
     # Reset registers to 0
     set(x, 0)
-    # wait for the side-set pin to go high
+    # wait for rising edge of the side-set pin
     wait(0, gpio, sideset_pin)
     wait(1, gpio, sideset_pin)
 
@@ -65,22 +65,21 @@ def pulse_counter_pio(sideset_pin=SIDESET_PIN_ABSOLUTE):
 # A second pio program to set a side-set pin, initialize the side-set pin to low
 @asm_pio(sideset_init=PIO.OUT_LOW)
 def timing_pulse_pio(irq_id=PWM_SM_ID, pulse_pin=INPUT_PULSE_PIN_ABSOLUTE):
-    # here we refer to the PWM example in RP2040 datasheet and do a noblock pull. if nothing on the TX FIFO, this will copy X to OSR, if there is something on the TX FIFO, this will copy the value from the TX FIFO to OSR and then pull it to the RX FIFO.
-    # this allow us to change the timing ratio on the fly
-    wait(1, pin, 0)
+    wait(1, gpio, pulse_pin)  # synchronize to the input pulse
+    wait(0, gpio, pulse_pin)
+    # irq(clear, irq_id)  # Clear the interrupt flag
+    wait(1, pin, 0)  # synchronize to reference pulse
     wait(0, pin, 0)
 
     label("loop")
-    wait(1, pin, 0).side(1)  # Wait for high pulse on input pin
-    wait(0, pin, 0)  # Wait for low pulse on input pin
+    wait(1, pin, 0).side(1)  # Wait for falling edge on input pin, set side-set pin high
+    wait(0, pin, 0)
 
-    # for debugging purposes, move the x to the isr
-    mov(isr, x)  # Move the x register to the ISR
+    mov(isr, x)  # for debugging purposes, move the counter value to the ISR
     push(noblock)  # push the isr to the fifo
 
-    # One pulse has been received, decrement the x register, check if it is zero
-    jmp(x_dec, "loop")
-    mov(x, y).side(0)  # else set the side-set pin to 1 and go back to the start
+    jmp(x_dec, "loop")  # Decrement the x register, check if it is zero
+    mov(x, y).side(0)  # else set the side-set pin to low and go back to the start
 
 
 # A third pio program to generate the reference PWM pulse
@@ -88,8 +87,10 @@ def timing_pulse_pio(irq_id=PWM_SM_ID, pulse_pin=INPUT_PULSE_PIN_ABSOLUTE):
 @asm_pio(sideset_init=PIO.OUT_LOW)
 def pwm_pio(irq_id=PWM_SM_ID):
     # wait for a interrupt to start the PWM signal
-    mov(x, osr).side(0)  # Move the value from the OSR to the x register
-    mov(y, isr)  # Move the value from the ISR to the y register
+    label("block")
+    # irq(block, irq_id)  # Clear the interrupt flag
+
+    mov(y, isr).side(0)  # Move the value from the ISR to the y register
 
     label("countloop")
     jmp(x_not_y, "noset")
@@ -100,6 +101,7 @@ def pwm_pio(irq_id=PWM_SM_ID):
 
     label("skip")
     jmp(y_dec, "countloop")  # Decrement x and loop until x is zero
+    jmp("block")  # Go back to the start and wait for the next interrupt
 
 
 def compute_best_pwm_parameters(
@@ -231,7 +233,7 @@ class PulseCounter:
         )
 
         # sideset pin to control the gate time
-        self.sideset_pin = Pin(sideset_pulse_pin, Pin.OUT, value=1)
+        self.sideset_pin = Pin(sideset_pulse_pin, Pin.OUT, value=0)
         # setup the pulse counter state machine
         self.pulse_counter_pio_sm = StateMachine(
             self.pulse_counter_pio_sm_id,
@@ -277,10 +279,13 @@ class PulseCounter:
         if timing_pulse_ratio <= 1:
             raise ValueError("Timing pulse ratio must be greater than 1")
         self.timing_pulse_ratio = timing_pulse_ratio
+        self.timing_pulse_pio_sm.active(0)
         self.timing_pulse_pio_sm.put(self.timing_pulse_ratio - 1)
         self.timing_pulse_pio_sm.exec("pull(noblock)")
         self.timing_pulse_pio_sm.exec("mov(y, osr)")
         self.timing_pulse_pio_sm.exec("mov(x, y)")
+        self.timing_pulse_pio_sm.restart()
+        self.timing_pulse_pio_sm.active(1)
 
     def read_pulse_count(self):
         """
@@ -321,12 +326,13 @@ class PulseCounter:
 
         :return: None
         """
+        self.pulse_counter_pio_sm.active(0)
         self.pulse_counter_pio_sm.restart()
-        self.pulse_counter_pio_sm.active(1)
 
+        self.timing_pulse_pio_sm.active(0)
         self.set_timing_pulse_ratio(self.timing_pulse_ratio)
-        self.timing_pulse_pio_sm.active(1)
         self.timing_pulse_pio_sm.restart()
+        self.start()
 
     def start(self):
         self.timing_pulse_pio_sm.active(1)
@@ -335,7 +341,6 @@ class PulseCounter:
     def stop(self):
         self.pulse_counter_pio_sm.active(0)
         self.timing_pulse_pio_sm.active(0)
-        self.timing_pulse_ratio.active(0)
 
 
 def main():

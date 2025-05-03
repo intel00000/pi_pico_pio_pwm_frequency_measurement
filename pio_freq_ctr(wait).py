@@ -28,7 +28,7 @@ PULSE_COUNTER_SM_ID = 1
 def pulse_counter_pio(sideset_pin=SIDESET_PIN_ABSOLUTE):
     # Reset scratch registers
     set(x, 0)
-    # wait for raising edge of the side-set pin
+    # wait for rising edge of the side-set pin
     wait(0, gpio, sideset_pin)
     wait(1, gpio, sideset_pin)
 
@@ -50,8 +50,6 @@ def pulse_counter_pio(sideset_pin=SIDESET_PIN_ABSOLUTE):
 # A second pio program to set a side-set pin
 @asm_pio(sideset_init=PIO.OUT_LOW)  # initialize the side-set pin to low
 def timing_pulse_pio():
-    mov(y, x)
-
     wait(1, pin, 0)  # synchronize to reference pulse
     wait(0, pin, 0)
 

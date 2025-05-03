@@ -29,7 +29,7 @@ PULSE_COUNTER_SM_ID = 1
 def pulse_counter_pio(sideset_pin=SIDESET_PIN_ABSOLUTE):
     # Reset registers
     set(x, 0)
-    # wait for raising edge of the side-set pin
+    # wait for rising edge of the side-set pin
     wait(0, gpio, sideset_pin)
     wait(1, gpio, sideset_pin)
 
@@ -64,8 +64,6 @@ def pulse_counter_pio(sideset_pin=SIDESET_PIN_ABSOLUTE):
 # A second pio program to set a side-set pin
 @asm_pio(sideset_init=PIO.OUT_LOW)  # initialize the side-set pin to low
 def timing_pulse_pio(irq_id=TIMING_PULSE_SM_ID, pulse_pin=INPUT_PULSE_PIN_ABSOLUTE):
-    mov(y, x)
-
     # synchronize the timing with the actual pulse
     wait(1, gpio, pulse_pin)
     wait(0, gpio, pulse_pin)
@@ -75,8 +73,8 @@ def timing_pulse_pio(irq_id=TIMING_PULSE_SM_ID, pulse_pin=INPUT_PULSE_PIN_ABSOLU
     wait(0, pin, 0)
 
     label("loop")
-    wait(1, pin, 0).side(1)  # Wait for high pulse on input pin
-    wait(0, pin, 0)  # Wait for low pulse on input pin
+    wait(1, pin, 0).side(1)  # Wait for falling edge on input pin, set side-set pin high
+    wait(0, pin, 0)
 
     mov(isr, x)  # for debugging purposes, move the counter value to the ISR
     push(noblock)  # push the isr to the fifo
