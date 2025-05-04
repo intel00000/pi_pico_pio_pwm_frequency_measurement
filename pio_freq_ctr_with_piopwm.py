@@ -1,11 +1,10 @@
-import math
 from machine import Pin, PWM, freq
 from rp2 import asm_pio, StateMachine, PIO
 
-DEBUG = True  # Set to True to enable debug messages
+DEBUG = False  # Set to True to enable debug messages
 
 PWM_TESTING_PIN_ABSOLUTE = 0  # Testing PWM signal, connect this to the INPUT_PULSE_PIN
-PWM_TESTING_PIN_ABSOLUTE_FREQUENCY = 2_000_000  # Frequency of the testing PWM signal
+PWM_TESTING_PIN_ABSOLUTE_FREQUENCY = 10  # Frequency of the testing PWM signal
 
 INPUT_PULSE_PIN_ABSOLUTE = 2  # Pin to measure the frequency of the PWM signal
 TIMING_PULSE_PIN_ABSOLUTE = 6  # Pin to generate the timing pulses
@@ -20,9 +19,9 @@ TIMING_PULSE_FREQUENCY = int(8 * CPU_TARGET_FREQUENCY / CPU_DEFAULT_FREQUENCY)
 # divided the timing pulse frequency by this value to get the true gate time
 TIMING_PULSE_RATIO = int(8 * CPU_TARGET_FREQUENCY / CPU_DEFAULT_FREQUENCY)
 
-PWM_SM_ID = 0
+PWM_SM_ID = 2
 TIMING_PULSE_SM_ID = 1
-PULSE_COUNTER_SM_ID = 4
+PULSE_COUNTER_SM_ID = 0
 
 
 # PIO program to count pulses, the gate time is controlled a side-set pin set by another PIO program
@@ -64,10 +63,10 @@ def pulse_counter_pio(sideset_pin=SIDESET_PIN_ABSOLUTE):
 
 # A second pio program to set a side-set pin, initialize the side-set pin to low
 @asm_pio(sideset_init=PIO.OUT_LOW)
-def timing_pulse_pio(irq_id=PWM_SM_ID, pulse_pin=INPUT_PULSE_PIN_ABSOLUTE):
-    wait(1, gpio, pulse_pin)  # synchronize to the input pulse
+def timing_pulse_pio(pulse_pin=INPUT_PULSE_PIN_ABSOLUTE):
+    wait(1, gpio, pulse_pin)  # synchronize to reference pulse
     wait(0, gpio, pulse_pin)
-    # irq(clear, irq_id)  # Clear the interrupt flag
+
     wait(1, pin, 0)  # synchronize to reference pulse
     wait(0, pin, 0)
 
@@ -85,11 +84,7 @@ def timing_pulse_pio(irq_id=PWM_SM_ID, pulse_pin=INPUT_PULSE_PIN_ABSOLUTE):
 # A third pio program to generate the reference PWM pulse
 # Adapted from the RP2040 datasheet PWM pio example.
 @asm_pio(sideset_init=PIO.OUT_LOW)
-def pwm_pio(irq_id=PWM_SM_ID):
-    # wait for a interrupt to start the PWM signal
-    label("block")
-    # irq(block, irq_id)  # Clear the interrupt flag
-
+def pwm_pio():
     mov(y, isr).side(0)  # Move the value from the ISR to the y register
 
     label("countloop")
@@ -101,60 +96,136 @@ def pwm_pio(irq_id=PWM_SM_ID):
 
     label("skip")
     jmp(y_dec, "countloop")  # Decrement x and loop until x is zero
-    jmp("block")  # Go back to the start and wait for the next interrupt
 
 
-def compute_best_pwm_parameters(
-    system_freq, target_pwm_freq, duty_percent, verbose=DEBUG, instr_per_loop=3
+# prioritizes exact frequency over duty resolution
+def compute_best_pwm_pio_parameters_fast(
+    system_freq,
+    target_pwm_freq,
+    duty_percent,
+    verbose=DEBUG,
+    instr_per_loop=3,
+    tolerance=1e-9,
 ):
     if not (0.0 <= duty_percent <= 100.0):
-        raise ValueError("Duty cycle must be between 0 and 100%")
+        raise ValueError("Duty cycle must be between 0 and 100")
     if target_pwm_freq <= 0 or system_freq <= 0:
         raise ValueError("Frequencies must be positive")
 
-    # Compute the max wrap allowed to keep sm_freq ≤ system_freq
-    max_possible_wrap = int(system_freq // (target_pwm_freq * instr_per_loop)) - 1
-    max_possible_wrap = min(max_possible_wrap, 4294967295)  # Clamp to 32-bit
-    if verbose:
-        print(f"[PWM PIO] Max possible wrap: {max_possible_wrap}")
+    best_config = None
+    min_error = float("inf")
 
-    best_wrap = 0
-    max_div = 255 + 15 / 16.0
+    for div_int in range(1, 65536):  # 16-bit int divider
+        for div_frac in range(0, 256):  # 8-bit fractional
+            clkdiv = div_int + div_frac / 256.0
+            sm_freq = system_freq / clkdiv
 
-    for wrap in range(max_possible_wrap, 0, -1):
-        sm_freq = target_pwm_freq * (wrap + 1) * instr_per_loop
-        exact_div = system_freq / sm_freq
+            wrap_est = system_freq / (target_pwm_freq * instr_per_loop * clkdiv) - 1
+            wrap = int(round(wrap_est))
 
-        if exact_div < 1.0 or exact_div > max_div:
-            continue
-
-        div_int = int(math.floor(exact_div))
-        div_frac = round((exact_div - div_int) * 16)
-        if div_frac > 15:
-            div_frac = 0
-            div_int += 1
-            if div_int > 255:
+            if not (1 <= wrap <= 0xFFFFFFFF):
                 continue
 
-        best_wrap = wrap
-        break
+            actual_freq = system_freq / ((wrap + 1) * instr_per_loop * clkdiv)
+            freq_error = abs(actual_freq - target_pwm_freq)
+            if freq_error / target_pwm_freq < tolerance:
+                duty = int(round((wrap + 1) * duty_percent / 100.0))
+                if verbose:
+                    print("-" * 60)
+                    print("[FAST PWM PIO] Perfect configuration found:")
+                    print(f"  System Frequency     : {system_freq} Hz")
+                    print(f"  Target PWM Frequency : {target_pwm_freq} Hz")
+                    print(f"  Duty Cycle           : {duty_percent:.3f}%")
+                    print(f"  Instructions/Loop    : {instr_per_loop}")
+                    print("  Result:")
+                    print(f"   - Duty Cycles = {duty}, Total Period Cycles = {wrap}")
+                    print(f"   - Actual Frequency = {actual_freq:.9f} Hz")
+                    print(f"   - div = {clkdiv:.9f} (int={div_int}, frac={div_frac})")
+                    print(f"   - sm_freq = {sm_freq:.9f} Hz")
 
-    if best_wrap == 0:
-        raise ValueError("No valid wrap found for desired frequency")
+                return {
+                    "sm_freq": sm_freq,
+                    "duty": duty,
+                    "wrap": wrap,
+                    "div_int": div_int,
+                    "div_frac": div_frac,
+                    "actual_freq": actual_freq,
+                    "exact": True,
+                }
 
-    # Now calculate final values
-    sm_freq = target_pwm_freq * (best_wrap + 1) * instr_per_loop
-    duty_count = int(round(duty_percent / 100.0 * (best_wrap + 1)))
+            # Save configuration with the smallest frequency difference
+            if freq_error < min_error:
+                min_error = freq_error
+                best_config = {
+                    "sm_freq": sm_freq,
+                    "duty": int(round((wrap + 1) * duty_percent / 100.0)),
+                    "wrap": wrap,
+                    "div_int": div_int,
+                    "div_frac": div_frac,
+                    "actual_freq": actual_freq,
+                    "exact": False,
+                }
+
+    if best_config is None:
+        raise ValueError("No valid configuration found.")
+    if verbose:
+        print("-" * 60)
+        print("[FAST PWM PIO] No perfect configuration. Using best available:")
+        print(f"  System Frequency     : {system_freq} Hz")
+        print(f"  Target PWM Frequency : {target_pwm_freq} Hz")
+        print(f"  Duty Cycle           : {duty_percent:.3f}%")
+        print(f"  Instructions/Loop    : {instr_per_loop}")
+        print("  Result:")
+        div = best_config["div_int"] + best_config["div_frac"] / 256.0
+        print(
+            f"   - Duty Cycles = {best_config['duty']}, Total Period Cycles = {best_config['wrap']}"
+        )
+        print(f"   - Actual Frequency = {best_config['actual_freq']:.9f} Hz")
+        print(f"   - div = {div:.9f}")
+        print(
+            f"   - div_int = {best_config['div_int']}, div_frac = {best_config['div_frac']}"
+        )
+    return best_config
+
+
+# This run the state machine at the system frequency and will try to approximate the high cycles and the total period cycles by simply division, which won't be exact, but obviously way faster.
+def calculate_pwm_pio_parameters_simple(
+    system_freq: float,
+    target_pwm_freq: float,
+    duty_percent: float,
+    max_cycles: int = 2**32 - 1,
+    instr_per_loop=3,
+    verbose: bool = DEBUG,
+):
+    if not (0.0 <= duty_percent <= 100.0):
+        raise ValueError("Duty cycle must be between 0 and 100")
+    if target_pwm_freq <= 0 or system_freq <= 0:
+        raise ValueError("Frequencies must be positive")
+
+    period_cycles = int(system_freq / (target_pwm_freq * instr_per_loop))
+    if period_cycles > max_cycles:
+        raise ValueError("Requested period too long for PIO")
+    duty_cycles = (duty_percent * period_cycles + 50) // 100
+    actual_freq = system_freq / (period_cycles * instr_per_loop)
 
     if verbose:
-        print(
-            f"[PWM PIO] Target PWM: {target_pwm_freq}Hz, Loop Instr: {instr_per_loop}"
-        )
-        print(
-            f"[PWM PIO] Resolution: {best_wrap + 1}, State Machine Freq: {sm_freq}, Duty Level: {duty_count}"
-        )
+        print("-" * 60)
+        print("[SIMPLE PWM PIO]")
+        print(f"  System Frequency     : {system_freq} Hz")
+        print(f"  Target PWM Frequency : {target_pwm_freq} Hz")
+        print(f"  Duty Cycle           : {duty_percent:.3f}%")
+        print(f"  Instructions/Loop    : {instr_per_loop}")
+        print("  Result:")
+        print(f"   - Duty Cycles       : {duty_cycles}")
+        print(f"   - Total Period Cycles : {period_cycles}")
+        print(f"   - Actual PWM Frequency : {actual_freq:.9f} Hz")
 
-    return sm_freq, duty_count, best_wrap
+    return {
+        "sm_freq": system_freq,  # state machine runs at system frequency
+        "duty": duty_cycles,  # duty cycles
+        "wrap": period_cycles,  # total cycles
+        "actual_freq": actual_freq,
+    }
 
 
 # Class to handle the pulse counting
@@ -204,14 +275,21 @@ class PulseCounter:
         # input pin for the waveform to be measured
         self.pulse_pin = Pin(input_pulse_pin, Pin.IN)
         # reference timing pulse pin to gate the frequency measurement
-        sm_freq, duty_count, wrap = compute_best_pwm_parameters(
-            system_freq=pio_freq,
+        pio_pwm_config = compute_best_pwm_pio_parameters_fast(
+            system_freq=freq(),
             target_pwm_freq=timing_pulse_frequency,
             duty_percent=50,
         )
-        self.pio_pwm_sm_freq = sm_freq
-        self.pio_pwm_level = duty_count
-        self.pio_pwm_period = wrap
+
+        pio_pwm_config_1 = calculate_pwm_pio_parameters_simple(
+            system_freq=freq(),
+            target_pwm_freq=timing_pulse_frequency,
+            duty_percent=50,
+        )
+        self.pio_pwm_sm_freq = int(pio_pwm_config_1["sm_freq"])
+        self.pio_pwm_level = int(pio_pwm_config_1["duty"])
+        self.pio_pwm_period = int(pio_pwm_config_1["wrap"] + 1)
+
         if DEBUG:
             print(
                 f"State Machine Freq: {self.pio_pwm_sm_freq}, PWM Period: {self.pio_pwm_period}, Duty Level: {self.pio_pwm_level}"
@@ -220,16 +298,13 @@ class PulseCounter:
         self.timing_pulse_ratio = timing_pulse_ratio
         self.timing_pulse_frequency = timing_pulse_frequency
         self.timing_interval_ms = 1000 / timing_pulse_frequency * timing_pulse_ratio
-        self.timing_pio_pwm = StateMachine(
+        self.pio_pwm = StateMachine(
             pwm_sm_id,
             pwm_pio_program,
             freq=self.pio_pwm_sm_freq,
             in_base=self.timing_pin,
             jmp_pin=self.timing_pin,
             sideset_base=self.timing_pin,
-        )
-        self.timing_pio_pwm_init(
-            self.timing_pio_pwm, self.pio_pwm_period, self.pio_pwm_level
         )
 
         # sideset pin to control the gate time
@@ -252,24 +327,26 @@ class PulseCounter:
             set_base=self.timing_pin,
             sideset_base=self.sideset_pin,
         )
-        self.set_timing_pulse_ratio(self.timing_pulse_ratio)
+        self.set_timing_pulse_ratio(self.timing_pulse_pio_sm, self.timing_pulse_ratio)
+        self.pio_pwm_init(self.pio_pwm, self.pio_pwm_period, self.pio_pwm_level)
 
         if DEBUG:
             print(
                 f"Pulse Counter SM ID: {self.pulse_counter_pio_sm_id}, Timing Pulse SM ID: {self.timing_pulse_pio_sm_id}, Timing Pulse Frequency: {timing_pulse_frequency} Hz, Timing Interval: {self.timing_interval_ms} ms"
             )
 
-    def timing_pio_pwm_init(self, sm: StateMachine, period: int, level: int):
+    def pio_pwm_init(self, sm: StateMachine, period: int, level: int):
         sm.active(0)
-        # Load ISR (period) and OSR (level)
-        sm.put(period)
+        sm.restart()
+        sm.put(period)  # Load ISR (period) and OSR (level)
         sm.exec("pull(noblock)")
-        sm.exec("out(isr, 32)")
+        sm.exec("mov(isr, osr)")
         sm.put(level)
         sm.exec("pull(noblock)")
+        sm.exec("mov(x, osr)")
         sm.active(1)
 
-    def set_timing_pulse_ratio(self, timing_pulse_ratio: int):
+    def set_timing_pulse_ratio(self, sm: StateMachine, timing_pulse_ratio: int):
         """
         On the fly set the timing pulse ratio, this will change the gate time.
 
@@ -279,13 +356,13 @@ class PulseCounter:
         if timing_pulse_ratio <= 1:
             raise ValueError("Timing pulse ratio must be greater than 1")
         self.timing_pulse_ratio = timing_pulse_ratio
-        self.timing_pulse_pio_sm.active(0)
-        self.timing_pulse_pio_sm.put(self.timing_pulse_ratio - 1)
-        self.timing_pulse_pio_sm.exec("pull(noblock)")
-        self.timing_pulse_pio_sm.exec("mov(y, osr)")
-        self.timing_pulse_pio_sm.exec("mov(x, y)")
-        self.timing_pulse_pio_sm.restart()
-        self.timing_pulse_pio_sm.active(1)
+        sm.active(0)
+        sm.put(self.timing_pulse_ratio - 1)
+        sm.exec("pull(noblock)")
+        sm.exec("mov(y, osr)")
+        sm.exec("mov(x, y)")
+        sm.restart()
+        sm.active(1)
 
     def read_pulse_count(self):
         """
@@ -327,16 +404,20 @@ class PulseCounter:
         :return: None
         """
         self.pulse_counter_pio_sm.active(0)
-        self.pulse_counter_pio_sm.restart()
-
         self.timing_pulse_pio_sm.active(0)
-        self.set_timing_pulse_ratio(self.timing_pulse_ratio)
+        self.pio_pwm.active(0)
+
+        self.pulse_counter_pio_sm.restart()
         self.timing_pulse_pio_sm.restart()
+        self.pio_pwm.restart()
+
+        self.set_timing_pulse_ratio(self.timing_pulse_pio_sm, self.timing_pulse_ratio)
+        self.pio_pwm_init(self.pio_pwm, self.pio_pwm_period, self.pio_pwm_level)
         self.start()
 
     def start(self):
-        self.timing_pulse_pio_sm.active(1)
         self.pulse_counter_pio_sm.active(1)
+        self.timing_pulse_pio_sm.active(1)
 
     def stop(self):
         self.pulse_counter_pio_sm.active(0)
@@ -370,7 +451,7 @@ def main():
         timing_interval_ms = pulse_counter.timing_interval_ms
 
         # start the pulse counter
-        pulse_counter.restart()
+        pulse_counter.start()
 
         # print the timing pulse count
         while True:
@@ -395,11 +476,9 @@ def main():
                 print(
                     f"Generated PWM Frequency: {gen_freq_str}, Gate Time: {timing_interval_ms} ms, PIO raw count: {pulse_count}, Frequency: {freq_str}"
                 )
-
     except KeyboardInterrupt:
         pulse_counter.stop()
-        print("Stopped the pulse counter")
-        print("Exiting the program")
+        print("Pulse counter stopped. Exiting...")
 
 
 if __name__ == "__main__":
