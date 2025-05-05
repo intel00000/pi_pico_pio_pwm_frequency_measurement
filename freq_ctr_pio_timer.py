@@ -42,7 +42,7 @@ class PulseCounter:
         self.sm.exec("mov(isr, x)")
         self.sm.exec("push()")
         self.counter = self.sm.get()
-        return (0x100000000 - self.counter) & 0xFFFFFFFF
+        return 0xFFFFFFFF - self.counter
 
     def reset(self):
         self.sm.exec("set(x, 0)")  # Reset the counter

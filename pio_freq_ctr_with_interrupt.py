@@ -204,7 +204,7 @@ class PulseCounter:
                 # output the raw binary value of the pulse count
                 binary_value = f"{pulse_count:032b}"
                 print(f"Raw Pulse Count (before flip): {binary_value}")
-            return (0x100000000 - pulse_count) & 0xFFFFFFFF  # flip the value
+            return 0xFFFFFFFF - pulse_count  # flip the value
 
     def read_timing_count(self):  # for debugging purposes
         """
